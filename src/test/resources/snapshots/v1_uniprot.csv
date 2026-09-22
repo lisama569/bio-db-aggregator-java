@@ -1,0 +1,10 @@
+# UniProt-like CSV export, snapshot v1
+id,type,symbol,name,sequence,organism,xrefs
+P68871,protein,HBB_HUMAN,Hemoglobin subunit beta (conflicting name case),MVHLTPEEKSAVTAL,Homo sapiens,refseq:NP_00517
+P69905,protein,HBA_HUMAN,Hemoglobin subunit alpha,MVLSPADKTNVKAA,Homo sapiens,
+Q9H0,gene,HBB,HBB gene record from uniprot namespace,,Homo sapiens,ensembl:ENSG00000244734
+P777,protein,CROSS_TYPE,Triangulation test protein,MQQ,Homo sapiens,refseq:NM_000518
+,gene,NOID,missing id here,,,
+X1,widget,NOTYPE,unknown entity type,,,
+P68871,protein,HBB_HUMAN,duplicate row same local id,MVHLTPEEKSAVTAL,Homo sapiens,refseq:NP_00517
+one,two,three,too,few,columns

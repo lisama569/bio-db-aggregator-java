@@ -1,0 +1,9 @@
+[
+  {"id": "NM_000518", "type": "gene", "symbol": "HBB", "name": "hemoglobin subunit beta v2",
+   "organism": "Homo sapiens", "xrefs": {"ensembl": "ENSG00000244734"}},
+  {"id": "NP_00517", "type": "protein", "symbol": "HBB_HUMAN", "name": "hemoglobin subunit beta",
+   "sequence": "MVHLTPEEKSAVTALGGGG", "organism": "Homo sapiens",
+   "xrefs": {"uniprot": "P68871"}},
+  {"id": "NM_000517", "type": "gene", "symbol": "HBA2", "name": "hemoglobin subunit alpha 2",
+   "organism": "Homo sapiens", "xrefs": {"ensembl": "ENSG0000188536"}}
+]

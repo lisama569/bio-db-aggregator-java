@@ -1,0 +1,7 @@
+# Ensembl-like pipe export, snapshot v1
+REC|ENSG00000244734|gene|HBB|Hemoglobin subunit beta (ensembl long name)||Homo sapiens|refseq:NM_000518
+REC|ENSP000004|protein|HBB_HUMAN|HBB protein|MVHLTPEEKSAVTALXX|Homo sapiens|uniprot:P68871
+BAD|only|three|fields
+REC|ENSG999|gene||Missing symbol record|||
+REC|ENSG00000244734|gene|HBB|duplicate within flat source||Homo sapiens|refseq:NM_000518
+REC|ENSP000005|protein|DANGLING_P|Dangling reference test|MKKK|Homo sapiens|uniprot:P00000
