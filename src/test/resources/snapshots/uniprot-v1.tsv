@@ -1,0 +1,4 @@
+id	type	uniprot	refseq	geneId	symbol	name	sequence
+UP-P1	protein	P04637	NP_000537		TP53	p53 tumor suppressor	MEEPQSDPSVEPPLSQETFSDLWKLLPENNVLSPLPSQAMDDLMLSPDDIEQWFTEDPGP
+UP-G1	gene			7157	TP53	TP53 gene record	
+BADTYPE	virus			99	X	wrong type value	SEQ

@@ -1,0 +1,6 @@
+id,type,geneId,proteinId,refseq,symbol,name,sequence
+NCBI-G1,gene,7157,,NM_000546,TP53,tumor protein p53,
+NCBI-P1,protein,,7157,NP_000537,TP53,cellular tumor antigen p53,MEEPQSDPSVEPPLSQETFSDLWKLLPENNVLSPLPSQAMDDLMLSPDDIEQWFTEDPGP
+BAD1,protein,,,,,no identifiers present,
+,gene,9999,,NM_000000,NOID,missing primary id,
+BROKEN_ROW_NO_COMMAS
