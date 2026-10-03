@@ -1,0 +1,10 @@
+{
+  "id": "priority-rules-ensembl-v1",
+  "description": "Alternate rule set: Ensembl-first adjudication. The name field uses an explicit per-field override (ensembl, uniprot, refseq) demonstrating field-level rules.",
+  "sources": ["refseq", "uniprot", "ensembl", "genbank", "ncbi"],
+  "sourcePriority": ["ensembl", "uniprot", "refseq", "genbank", "ncbi"],
+  "strictSources": false,
+  "fieldRules": {
+    "name": { "priority": ["ensembl", "uniprot", "refseq", "genbank", "ncbi"] }
+  }
+}

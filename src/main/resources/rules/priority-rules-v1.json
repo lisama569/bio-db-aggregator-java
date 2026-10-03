@@ -1,0 +1,7 @@
+{
+  "id": "priority-rules-v1",
+  "description": "Built-in legacy priority: RefSeq authoritative, then UniProt, Ensembl, GenBank, NCBI. Undeclared sources are appended lexicographically.",
+  "sources": ["refseq", "uniprot", "ensembl", "genbank", "ncbi"],
+  "sourcePriority": ["refseq", "uniprot", "ensembl", "genbank", "ncbi"],
+  "strictSources": false
+}

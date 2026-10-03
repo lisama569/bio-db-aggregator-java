@@ -1,0 +1,5 @@
+{
+  "id": "bad-empty-priority",
+  "sources": ["refseq"],
+  "sourcePriority": []
+}

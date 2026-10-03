@@ -1,0 +1,4 @@
+{
+  "sources": ["refseq"],
+  "sourcePriority": ["refseq"]
+}

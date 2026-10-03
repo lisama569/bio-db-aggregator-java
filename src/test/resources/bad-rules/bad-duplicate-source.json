@@ -1,0 +1,5 @@
+{
+  "id": "bad-duplicate-source",
+  "sources": ["refseq", "uniprot", "ensembl"],
+  "sourcePriority": ["refseq", "uniprot", "refseq"]
+}

@@ -4,34 +4,43 @@ import com.github.lisama569.biodbaggregatorjava.model.BioRecord;
 import com.github.lisama569.biodbaggregatorjava.model.RejectedRecord;
 import com.github.lisama569.biodbaggregatorjava.model.ResolutionReport;
 import com.github.lisama569.biodbaggregatorjava.model.SourceFormat;
+import com.github.lisama569.biodbaggregatorjava.rules.RuleSet;
 
 import java.util.List;
 import java.util.Optional;
 
 /**
- * Versioned, append-only snapshot store.
+ * Versioned, append-only snapshot store with per-version pinned rule sets.
  *
  * <p>A <b>version</b> is a logical data release assembled from one or more
- * <b>source imports</b>. Importing the same (version, source) twice with identical
- * content is idempotent; importing it with different content is rejected because a
- * released version is immutable.</p>
+ * <b>source imports</b>. The first import of a version <b>pins</b> the rule set used to
+ * adjudicate it; that immutable rule-set instance stays attached forever, so changing or
+ * switching the active rule set never rewrites the version's stamped conclusion.</p>
  *
- * <p>Readers always observe a complete single-version view: a read captures one
- * {@link SnapshotView} for its whole duration, so publishing/switching versions while
- * queries are in flight never mixes old and new data.</p>
+ * <p>Readers always observe a complete single-version, single-ruleset view: a read
+ * captures one {@link SnapshotView} for its whole duration, so importing, switching
+ * versions or switching the active rule set while queries are in flight never mixes old
+ * and new data or rules.</p>
  */
 public interface SnapshotStore {
 
     /**
      * Atomically add (or replay) one source import into a version, then republish the
-     * aggregated immutable view for that version.
+     * aggregated immutable view. The first import of a version pins {@code activeRules}
+     * as its adjudication rule set; later imports keep the pinned rule set regardless of
+     * the passed one.
      */
-    PublishResult importSource(SourceImport input);
+    PublishResult importSource(SourceImport input, RuleSet activeRules);
 
     /** Atomically point "current" at an already published version; false if unknown. */
     boolean switchVersion(String version);
 
+    /** Atomically change which rule set newly published versions and current queries use. */
+    void activateRuleSet(RuleSet ruleSet);
+
     Optional<String> currentVersion();
+
+    Optional<RuleSet> activeRuleSet();
 
     Optional<SnapshotView> view(String version);
 
@@ -39,11 +48,24 @@ public interface SnapshotStore {
 
     List<String> versions();
 
+    /**
+     * Resolve a version under an explicit, immutable rule set and cache the conclusion
+     * inside the version's view, never disturbing its pinned conclusion.
+     */
+    ResolutionReport resolutionUnder(String version, RuleSet ruleSet);
+
     /** Immutable bundle handed to readers; capturing one guarantees a single-version view. */
     record SnapshotView(List<BioRecord> records,
                         List<RejectedRecord> rejected,
                         List<RejectedRecord> conflicts,
-                        ResolutionReport resolution) {
+                        ResolutionReport pinnedResolution,
+                        RuleSet pinnedRules,
+                        java.util.Map<String, ResolutionReport> resolutionsByRules) {
+
+        /** The resolution to use when no rule set is explicitly named (the stamped one). */
+        public ResolutionReport resolution() {
+            return pinnedResolution;
+        }
     }
 
     /** One source's parsed contribution to a version. */

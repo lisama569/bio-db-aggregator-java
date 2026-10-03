@@ -1,0 +1,10 @@
+{
+  "id": "test-rules-ensembl",
+  "description": "Test rule set: Ensembl first, field-level name override.",
+  "sources": ["refseq", "uniprot", "ensembl"],
+  "sourcePriority": ["ensembl", "uniprot", "refseq"],
+  "strictSources": false,
+  "fieldRules": {
+    "name": { "priority": ["ensembl", "uniprot", "refseq"] }
+  }
+}

@@ -7,6 +7,10 @@ import com.github.lisama569.biodbaggregatorjava.model.ResolutionConflict;
 import com.github.lisama569.biodbaggregatorjava.model.ResolutionReport;
 import com.github.lisama569.biodbaggregatorjava.model.ResolvedEntity;
 import com.github.lisama569.biodbaggregatorjava.model.Snapshot;
+import com.github.lisama569.biodbaggregatorjava.rules.FieldRule;
+import com.github.lisama569.biodbaggregatorjava.rules.InvalidRuleSetException;
+import com.github.lisama569.biodbaggregatorjava.rules.RuleRejectionReason;
+import com.github.lisama569.biodbaggregatorjava.rules.RuleSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -16,46 +20,45 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.TreeSet;
 
 /**
- * Deterministic cross-source identifier resolver.
+ * Deterministic cross-source identifier resolver driven by an immutable {@link RuleSet}.
  *
- * <h2>Resolution rules (rulesVersion {@value #RULES_VERSION})</h2>
+ * <h2>Resolution rules</h2>
  * <ol>
  *   <li><b>Within-source duplicates</b> are handled at import time; the resolver sees at
  *       most one record per (source, localId).</li>
  *   <li><b>Explicit cross-references link entities:</b> record A references
  *       {@code namespace:value}; if a record B owns that token as its home identity
- *       ({@code B.source == namespace} and {@code B.localId == value}) or asserts the same
- *       token, and both have the same {@link EntityType}, A and B are merged. Links form
- *       an equivalence relation computed with union-find, so they are order-independent
- *       and transitive.</li>
+ *       ({@code B.source == namespace} and {@code B.localId == value}), and both have the
+ *       same {@link EntityType}, A and B are merged. Links form an equivalence relation
+ *       computed with union-find, so they are order-independent and transitive. Note that
+ *       merging itself does not depend on source priority.</li>
  *   <li><b>No silent merging:</b> a reference to a token nobody owns is a
  *       {@link AmbiguousLink#DANGLING_REFERENCE}; a same-token claim across different
- *       entity types is a {@link AmbiguousLink#CROSS_TYPE_COLLISION}. Both are kept in
- *       the report instead of being dropped or guessed.</li>
- *   <li><b>Source priority:</b> every merged field is taken from the highest-priority
- *       source providing a non-blank value. Default priority (highest first):
- *       {@code refseq > uniprot > ensembl > genbank > ncbi}; unknown sources are appended
- *       after known ones in ascending source-name order.</li>
+ *       entity types is a {@link AmbiguousLink#CROSS_TYPE_COLLISION}.</li>
+ *   <li><b>Source priority comes from the rule set:</b> every merged field is taken from
+ *       the first source (in that field's effective priority) providing a non-blank value.
+ *       Per-field overrides ({@link FieldRule}) may reorder adjudication independently.
+ *       Sources not declared by the rule set are appended lexicographically unless the
+ *       rule set is strict, in which case the data is refused.</li>
  *   <li><b>Conflicts are never silent:</b> whenever a lower-priority source asserts a
- *       different non-blank value, a {@link ResolutionConflict} records winner and losers
- *       with their values.</li>
- *   <li><b>Entity key:</b> {@code TYPE:priority-source:localId} of the highest-priority
- *       member (ties broken by ascending localId).</li>
+ *       different non-blank value, a {@link ResolutionConflict} records winner and losers.</li>
+ *   <li><b>Entity key:</b> {@code TYPE:anchor-source:localId} of the first member in the
+ *       rule set's global source order (ties broken by ascending localId).</li>
  *   <li><b>Determinism:</b> entity order, member order, ambiguity order and map iteration
- *       are fully ordered; the same snapshot always yields byte-identical conclusions.</li>
+ *       are fully ordered; the same snapshot under the same rule set always yields
+ *       byte-identical conclusions.</li>
  * </ol>
  */
 @Component
 public class PriorityIdentifierResolver implements IdentifierResolver {
 
     static final String RULES_VERSION = "priority-rules-v1";
+    private static final List<String> FIELDS = List.of("symbol", "name", "sequence", "organism");
     private static final Logger log = LoggerFactory.getLogger(PriorityIdentifierResolver.class);
 
     private final List<String> sourcePriority;
@@ -78,19 +81,25 @@ public class PriorityIdentifierResolver implements IdentifierResolver {
         return RULES_VERSION;
     }
 
-    private int rank(String source) {
-        int idx = sourcePriority.indexOf(source);
-        return idx >= 0 ? idx : Integer.MAX_VALUE;
-    }
-
-    /** Total order on sources: configured priority first, then lexicographic name. */
-    Comparator<String> sourceOrder() {
-        return Comparator.comparingInt(this::rank).thenComparing(Comparator.naturalOrder());
+    /** Legacy rule set derived from the CSV property, preserving the original behavior. */
+    RuleSet legacyRuleSet() {
+        return new RuleSet(RULES_VERSION, "legacy csv-configured priority",
+                sourcePriority, sourcePriority, Map.of(), false, null);
     }
 
     @Override
     public ResolutionReport resolve(Snapshot snapshot) {
+        return resolve(snapshot, legacyRuleSet());
+    }
+
+    @Override
+    public ResolutionReport resolve(Snapshot snapshot, RuleSet ruleSet) {
+        ruleSet.validate();
         List<BioRecord> records = snapshot.records();
+
+        ensureSourcesKnown(ruleSet, records);
+        Comparator<String> globalOrder = sourceOrder(ruleSet, ruleSet.sourcePriority(), records);
+
         int n = records.size();
 
         // 1) Union-find over record indices.
@@ -143,61 +152,164 @@ public class PriorityIdentifierResolver implements IdentifierResolver {
         int totalConflicts = 0;
         for (Integer root : roots) {
             List<BioRecord> members = groups.get(root);
-            members.sort(memberOrder());
-            ResolvedEntity entity = merge(members, snapshot.version());
+            members.sort(memberOrder(globalOrder));
+            ResolvedEntity entity = merge(members, snapshot.version(), ruleSet, globalOrder);
             entities.add(entity);
             totalConflicts += entity.fieldConflicts().size();
             log.info("resolution: snapshot={} rules={} entityKey={} identifiers={} conflicts={} basis={}",
-                    snapshot.version(), RULES_VERSION, entity.entityKey(),
+                    snapshot.version(), ruleSet.id(), entity.entityKey(),
                     entity.identifiersBySource(), entity.fieldConflicts().size(),
-                    describeBasis(members));
+                    describeBasis(members, ruleSet, entity));
         }
         entities.sort(Comparator.comparing(ResolvedEntity::entityKey));
         for (AmbiguousLink a : ambiguities) {
             log.info("resolution ambiguity: snapshot={} rules={} token={} reason={} claimer={}:{}",
-                    snapshot.version(), RULES_VERSION, a.token(), a.reason(),
+                    snapshot.version(), ruleSet.id(), a.token(), a.reason(),
                     a.claimerSource(), a.claimerId());
         }
         log.info("resolution complete: snapshot={} rules={} entities={} fieldConflicts={} ambiguities={}",
-                snapshot.version(), RULES_VERSION, entities.size(), totalConflicts, ambiguities.size());
-        return new ResolutionReport(snapshot.version(), RULES_VERSION,
+                snapshot.version(), ruleSet.id(), entities.size(), totalConflicts, ambiguities.size());
+        return new ResolutionReport(snapshot.version(), ruleSet.id(),
                 List.copyOf(entities), totalConflicts, List.copyOf(ambiguities));
+    }
+
+    private void ensureSourcesKnown(RuleSet ruleSet, List<BioRecord> records) {
+        if (!ruleSet.strictSources()) {
+            return;
+        }
+        for (BioRecord r : records) {
+            if (!ruleSet.sources().contains(r.source())) {
+                throw new InvalidRuleSetException(RuleRejectionReason.UNKNOWN_SOURCE_REFERENCED,
+                        ruleSet.id(),
+                        "strict rule set does not declare source '" + r.source()
+                                + "' present in snapshot; declared sources=" + ruleSet.sources());
+            }
+            for (String ns : r.crossReferences().keySet()) {
+                if (!ruleSet.sources().contains(ns)) {
+                    throw new InvalidRuleSetException(RuleRejectionReason.UNKNOWN_SOURCE_REFERENCED,
+                            ruleSet.id(),
+                            "strict rule set does not declare xref namespace '" + ns
+                                    + "' referenced by " + r.source() + ":" + r.localId());
+                }
+            }
+        }
+    }
+
+    /** Total order on sources: declared priority first, then (if non-strict) extra
+     *  sources appearing in the data in ascending name order. */
+    private Comparator<String> sourceOrder(RuleSet ruleSet, List<String> priority,
+                                           List<BioRecord> records) {
+        if (ruleSet.strictSources()) {
+            return Comparator.comparingInt((String s) -> {
+                int idx = priority.indexOf(s);
+                if (idx < 0) {
+                    // strict sets reject unknown data before ordering; put unknowns last defensively
+                    return Integer.MAX_VALUE;
+                }
+                return idx;
+            }).thenComparing(Comparator.naturalOrder());
+        }
+        List<String> extra = new ArrayList<>();
+        for (BioRecord r : records) {
+            if (!priority.contains(r.source()) && !extra.contains(r.source())) {
+                extra.add(r.source());
+            }
+            for (String ns : r.crossReferences().keySet()) {
+                if (!priority.contains(ns) && !extra.contains(ns)) {
+                    extra.add(ns);
+                }
+            }
+        }
+        extra.sort(Comparator.naturalOrder());
+        List<String> all = new ArrayList<>(priority);
+        all.addAll(extra);
+        return Comparator.comparingInt((String s) -> {
+            int idx = all.indexOf(s);
+            return idx >= 0 ? idx : Integer.MAX_VALUE;
+        }).thenComparing(Comparator.naturalOrder());
     }
 
     private static String homeToken(BioRecord r) {
         return r.source() + ":" + r.localId();
     }
 
-    private String describeBasis(List<BioRecord> members) {
-        List<String> orderedSources = members.stream().map(BioRecord::source)
-                .distinct().sorted(sourceOrder()).toList();
-        return "winner=" + orderedSources.get(0) + " priority=" + sourcePriority;
+    private String describeBasis(List<BioRecord> members, RuleSet ruleSet, ResolvedEntity entity) {
+        List<String> perField = new ArrayList<>();
+        for (String field : FIELDS) {
+            String winner = winnerSourceFor(members, ruleSet, field);
+            if (winner != null) {
+                perField.add(field + "<-" + winner + "(order=" + ruleSet.priorityFor(field) + ")");
+            }
+        }
+        return "contributing=" + entity.contributingSources() + " globalPriority="
+                + ruleSet.sourcePriority() + " fields={" + String.join("; ", perField) + "}";
     }
 
-    /** Member order: source priority ascending, then local id ascending; fully deterministic. */
-    private Comparator<BioRecord> memberOrder() {
-        return Comparator.comparing(BioRecord::source, sourceOrder())
+    private String winnerSourceFor(List<BioRecord> members, RuleSet ruleSet, String field) {
+        String winnerSource = null;
+        int winnerRank = Integer.MAX_VALUE;
+        for (BioRecord m : members) {
+            if (getter(field).apply(m) != null) {
+                int idx = effectiveIndex(ruleSet, field, m.source(), members);
+                if (idx < winnerRank) {
+                    winnerRank = idx;
+                    winnerSource = m.source();
+                }
+            }
+        }
+        return winnerSource;
+    }
+
+    private int effectiveIndex(RuleSet ruleSet, String field, String source,
+                               List<BioRecord> members) {
+        List<String> priority = ruleSet.priorityFor(field);
+        int idx = priority.indexOf(source);
+        if (idx >= 0) {
+            return idx;
+        }
+        if (ruleSet.strictSources()) {
+            return Integer.MAX_VALUE;
+        }
+        List<String> extra = new ArrayList<>();
+        for (BioRecord r : members) {
+            if (!priority.contains(r.source()) && !extra.contains(r.source())) {
+                extra.add(r.source());
+            }
+        }
+        extra.sort(Comparator.naturalOrder());
+        int extraIdx = extra.indexOf(source);
+        return extraIdx < 0 ? Integer.MAX_VALUE : priority.size() + extraIdx;
+    }
+
+    /** Member order: global source priority ascending, then local id ascending. */
+    private Comparator<BioRecord> memberOrder(Comparator<String> sourceComparator) {
+        return Comparator.comparing(BioRecord::source, sourceComparator)
                 .thenComparing(BioRecord::localId);
     }
 
-    private ResolvedEntity merge(List<BioRecord> members, String version) {
-        // members is already ordered; the first one defines key/type and is the top-priority source
+    private ResolvedEntity merge(List<BioRecord> members, String version,
+                                 RuleSet ruleSet, Comparator<String> globalOrder) {
+        // members is already ordered; the first one defines key/type and is the
+        // top-priority member under the rule set's global source order.
         BioRecord anchor = members.get(0);
         EntityType type = anchor.type();
 
         Map<String, String> identifiersBySource = new LinkedHashMap<>();
-        Set<String> contributing = new LinkedHashSet<>();
+        List<String> contributing = new ArrayList<>();
         for (BioRecord m : members) {
-            contributing.add(m.source());
-            // first write wins = highest-priority source's localId
+            if (!contributing.contains(m.source())) {
+                contributing.add(m.source());
+            }
+            // first write wins = highest global-priority source's localId
             identifiersBySource.putIfAbsent(m.source(), m.localId());
         }
+        contributing.sort(globalOrder);
 
         List<ResolutionConflict> conflicts = new ArrayList<>();
-        String symbol = chooseField(members, BioRecord::symbol, "symbol", conflicts);
-        String name = chooseField(members, BioRecord::name, "name", conflicts);
-        String sequence = chooseField(members, BioRecord::sequence, "sequence", conflicts);
-        String organism = chooseField(members, BioRecord::organism, "organism", conflicts);
+        String symbol = chooseField(members, ruleSet, "symbol", conflicts);
+        String name = chooseField(members, ruleSet, "name", conflicts);
+        String sequence = chooseField(members, ruleSet, "sequence", conflicts);
+        String organism = chooseField(members, ruleSet, "organism", conflicts);
 
         String entityKey = type.name() + ":" + anchor.source() + ":" + anchor.localId();
         return new ResolvedEntity(
@@ -211,54 +323,63 @@ public class PriorityIdentifierResolver implements IdentifierResolver {
                 List.copyOf(conflicts),
                 List.copyOf(contributing),
                 version,
-                RULES_VERSION);
+                ruleSet.id());
     }
 
     private String chooseField(List<BioRecord> members,
-                               java.util.function.Function<BioRecord, String> getter,
+                               RuleSet ruleSet,
                                String field,
                                List<ResolutionConflict> conflicts) {
-        // members sorted by source order; first non-null value is the deterministic winner
+        List<String> priority = ruleSet.priorityFor(field);
+        // rank each contributing source by this field's effective order
         String winnerSource = null;
+        int winnerRank = Integer.MAX_VALUE;
         String winnerValue = null;
         for (BioRecord m : members) {
-            String v = getter.apply(m);
+            String v = getter(field).apply(m);
             if (v != null) {
-                winnerSource = m.source();
-                winnerValue = v;
-                break;
+                int rank = effectiveIndex(ruleSet, field, m.source(), members);
+                if (rank < winnerRank) {
+                    winnerRank = rank;
+                    winnerSource = m.source();
+                    winnerValue = v;
+                }
             }
         }
         if (winnerValue == null) {
             return null;
         }
-        List<String> loserSources = new ArrayList<>();
-        List<String> loserValues = new ArrayList<>();
+        // retain one differing loser value per source, ordered by the field's source order
+        Map<String, String> loserBySource = new LinkedHashMap<>();
         for (BioRecord m : members) {
             if (m.source().equals(winnerSource)) {
                 continue;
             }
-            String v = getter.apply(m);
+            String v = getter(field).apply(m);
             if (v != null && !v.equals(winnerValue)) {
-                loserSources.add(m.source());
-                loserValues.add(v);
+                loserBySource.putIfAbsent(m.source(), v);
             }
         }
-        if (!loserSources.isEmpty()) {
-            // One retained loser value per source (first seen in priority-sorted members),
-            // then order the result strictly by the deterministic source order.
-            Map<String, String> loserBySource = new LinkedHashMap<>();
-            for (int i = 0; i < loserSources.size(); i++) {
-                loserBySource.putIfAbsent(loserSources.get(i), loserValues.get(i));
-            }
+        if (!loserBySource.isEmpty()) {
             List<String> orderedSources = new ArrayList<>(loserBySource.keySet());
-            orderedSources.sort(sourceOrder());
+            orderedSources.sort(Comparator.comparingInt(
+                    s -> effectiveIndex(ruleSet, field, s, members)));
             List<String> orderedValues = orderedSources.stream()
                     .map(loserBySource::get).toList();
             conflicts.add(new ResolutionConflict(field, winnerSource, winnerValue,
                     List.copyOf(orderedSources), List.copyOf(orderedValues)));
         }
         return winnerValue;
+    }
+
+    private static java.util.function.Function<BioRecord, String> getter(String field) {
+        return switch (field) {
+            case "symbol" -> BioRecord::symbol;
+            case "name" -> BioRecord::name;
+            case "sequence" -> BioRecord::sequence;
+            case "organism" -> BioRecord::organism;
+            default -> throw new IllegalArgumentException("unknown adjudicated field " + field);
+        };
     }
 
     private static int find(int[] parent, int x) {

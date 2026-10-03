@@ -1,0 +1,5 @@
+{
+  "id": "bad-unknown-source",
+  "sources": ["refseq", "uniprot"],
+  "sourcePriority": ["refseq", "uniprot", "ensembl"]
+}

@@ -1,0 +1,8 @@
+{
+  "id": "bad-unknown-field",
+  "sources": ["refseq", "uniprot"],
+  "sourcePriority": ["refseq", "uniprot"],
+  "fieldRules": {
+    "banana": { "priority": ["refseq"] }
+  }
+}

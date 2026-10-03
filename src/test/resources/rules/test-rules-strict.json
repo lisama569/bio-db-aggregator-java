@@ -1,0 +1,7 @@
+{
+  "id": "test-rules-strict",
+  "description": "Strict rule set: unknown sources are refused at resolution time.",
+  "sources": ["refseq", "uniprot", "ensembl"],
+  "sourcePriority": ["refseq", "uniprot", "ensembl"],
+  "strictSources": true
+}

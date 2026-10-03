@@ -1,0 +1,7 @@
+{
+  "id": "test-rules-refseq",
+  "description": "Test rule set: RefSeq first.",
+  "sources": ["refseq", "uniprot", "ensembl"],
+  "sourcePriority": ["refseq", "uniprot", "ensembl"],
+  "strictSources": false
+}
