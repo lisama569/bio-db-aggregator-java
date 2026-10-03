@@ -1,0 +1,11 @@
+{
+  "id": "priority-rules-v1",
+  "description": "Default source-priority rules. Highest priority first; field adjudication is SOURCE_PRIORITY for every canonical field. This set reproduces the historical built-in conclusions.",
+  "sourcePriority": ["refseq", "uniprot", "ensembl", "genbank", "ncbi"],
+  "fields": {
+    "symbol":   {"strategy": "SOURCE_PRIORITY"},
+    "name":     {"strategy": "SOURCE_PRIORITY"},
+    "sequence": {"strategy": "SOURCE_PRIORITY"},
+    "organism": {"strategy": "SOURCE_PRIORITY"}
+  }
+}

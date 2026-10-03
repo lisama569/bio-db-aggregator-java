@@ -39,11 +39,38 @@ public interface SnapshotStore {
 
     List<String> versions();
 
+    /**
+     * Resolve (or fetch the cached immutable report for) one version under an explicit
+     * rule set id. The same (version, rulesId) always returns an equal report.
+     * Unknown rule set -> {@link com.github.lisama569.biodbaggregatorjava.ruleset.RuleSetException}.
+     */
+    ResolutionReport resolutionFor(String version, String rulesId);
+
+    /** Rule set id under which the version's pinned conclusion was first published. */
+    Optional<String> pinnedRules(String version);
+
+    /** Currently selected rule set id used for unqualified reads/new imports. */
+    String currentRulesId();
+
+    /** Atomically select a registered rule set as the current one; false if unknown. */
+    boolean switchCurrentRules(String rulesId);
+
     /** Immutable bundle handed to readers; capturing one guarantees a single-version view. */
     record SnapshotView(List<BioRecord> records,
                         List<RejectedRecord> rejected,
                         List<RejectedRecord> conflicts,
-                        ResolutionReport resolution) {
+                        java.util.Map<String, ResolutionReport> resolutions,
+                        String pinnedRulesId) {
+
+        /** The version's pinned (published) conclusion. */
+        public ResolutionReport resolution() {
+            return resolutions.get(pinnedRulesId);
+        }
+
+        /** The conclusion computed under a specific rule set (must exist in the bundle). */
+        public ResolutionReport resolution(String rulesId) {
+            return resolutions.get(rulesId);
+        }
     }
 
     /** One source's parsed contribution to a version. */

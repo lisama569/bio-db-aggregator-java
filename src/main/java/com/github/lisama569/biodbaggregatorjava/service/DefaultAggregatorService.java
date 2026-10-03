@@ -12,6 +12,9 @@ import com.github.lisama569.biodbaggregatorjava.parser.SnapshotParser;
 import com.github.lisama569.biodbaggregatorjava.store.SnapshotStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.github.lisama569.biodbaggregatorjava.ruleset.DefaultRuleSetRegistry;
+import com.github.lisama569.biodbaggregatorjava.ruleset.RuleSet;
+import com.github.lisama569.biodbaggregatorjava.model.rules.ResolutionComparison;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -29,10 +32,16 @@ public class DefaultAggregatorService implements AggregatorService {
 
     private final ParserRegistry parserRegistry;
     private final SnapshotStore store;
+    private final DefaultRuleSetRegistry ruleSets;
+    private final RuleComparisonService comparisonService;
 
-    public DefaultAggregatorService(ParserRegistry parserRegistry, SnapshotStore store) {
+    public DefaultAggregatorService(ParserRegistry parserRegistry, SnapshotStore store,
+                                   DefaultRuleSetRegistry ruleSets,
+                                   RuleComparisonService comparisonService) {
         this.parserRegistry = parserRegistry;
         this.store = store;
+        this.ruleSets = ruleSets;
+        this.comparisonService = comparisonService;
     }
 
     @Override
@@ -110,7 +119,13 @@ public class DefaultAggregatorService implements AggregatorService {
 
     @Override
     public Optional<ResolutionReport> getResolution(String version) {
-        return store.view(version).map(SnapshotStore.SnapshotView::resolution);
+        return store.view(version).map(view -> {
+            ResolutionReport pinned = view.resolution();
+            log.info("pinned resolution read: snapshot={} rules={} entities={} (historical conclusion, unaffected by current rules '{}')",
+                    version, pinned.rulesVersion(), pinned.entities().size(),
+                    store.currentRulesId());
+            return pinned;
+        });
     }
 
     /**
@@ -159,6 +174,72 @@ public class DefaultAggregatorService implements AggregatorService {
         return store.currentView()
                 .map(v -> v.resolution().entities())
                 .orElse(List.of());
+    }
+
+    // ---- rule-aware reads ----------------------------------------------------
+
+    @Override
+    public Optional<ResolutionReport> getResolution(String version, String rulesId) {
+        if (rulesId == null || rulesId.isBlank()) {
+            return getResolution(version);
+        }
+        if (store.view(version).isEmpty()) {
+            return Optional.empty();
+        }
+        // Unknown rule set throws RuleSetException (UNKNOWN_RULESET) rather than falling back.
+        return Optional.of(store.resolutionFor(version, rulesId.trim()));
+    }
+
+    @Override
+    public Optional<ResolvedEntity> resolveIdentifier(String version, String rulesId,
+                                                      String identifier) {
+        if (identifier == null || identifier.isBlank()) {
+            return Optional.empty();
+        }
+        ResolutionReport report = store.resolutionFor(version, rulesId);
+        String needle = identifier.trim();
+        for (ResolvedEntity e : report.entities()) {
+            if (matches(e, needle)) {
+                log.info("identifier resolved: version={} rules={} query={} entityKey={} winnerBasis={}",
+                        report.snapshotVersion(), report.rulesVersion(), needle,
+                        e.entityKey(), e.fieldWinnerSources());
+                return Optional.of(e);
+            }
+        }
+        log.info("identifier unresolved: version={} rules={} query={}",
+                report.snapshotVersion(), report.rulesVersion(), needle);
+        return Optional.empty();
+    }
+
+    @Override
+    public List<ResolvedEntity> queryAll(String rulesId) {
+        Optional<String> versionOpt = store.currentVersion();
+        if (versionOpt.isEmpty()) {
+            return List.of();
+        }
+        return store.resolutionFor(versionOpt.get(), rulesId).entities();
+    }
+
+    @Override
+    public List<RuleSet> ruleSets() {
+        return ruleSets.all();
+    }
+
+    @Override
+    public String currentRulesId() {
+        return ruleSets.currentId();
+    }
+
+    @Override
+    public boolean switchRules(String rulesId) {
+        boolean ok = store.switchCurrentRules(rulesId);
+        log.info("switchRules: requested={} outcome={}", rulesId, ok);
+        return ok;
+    }
+
+    @Override
+    public ResolutionComparison compareRules(String version, String rulesIdA, String rulesIdB) {
+        return comparisonService.compare(version, rulesIdA, rulesIdB);
     }
 
     static String sha256(String input) {

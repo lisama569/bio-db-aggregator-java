@@ -1,0 +1,1 @@
+{"id":"bad-strategy","sourcePriority":["refseq"],"fields":{"name":{"strategy":"MAJORITY_VOTE"}}}

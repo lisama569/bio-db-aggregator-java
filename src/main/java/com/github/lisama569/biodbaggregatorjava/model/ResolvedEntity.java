@@ -15,6 +15,7 @@ public record ResolvedEntity(
         List<ResolutionConflict> fieldConflicts,
         List<String> contributingSources,
         String snapshotVersion,
-        String rulesVersion
+        String rulesVersion,
+        Map<String, String> fieldWinnerSources
 ) {
 }

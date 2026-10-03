@@ -5,6 +5,9 @@ import com.github.lisama569.biodbaggregatorjava.model.ResolutionReport;
 import com.github.lisama569.biodbaggregatorjava.model.ResolvedEntity;
 import com.github.lisama569.biodbaggregatorjava.model.Snapshot;
 import com.github.lisama569.biodbaggregatorjava.model.SourceFormat;
+import com.github.lisama569.biodbaggregatorjava.model.rules.ResolutionComparison;
+import com.github.lisama569.biodbaggregatorjava.ruleset.RuleSet;
+import com.github.lisama569.biodbaggregatorjava.ruleset.RuleSetException;
 import com.github.lisama569.biodbaggregatorjava.service.AggregatorService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -78,15 +81,81 @@ public class AggregatorController {
     }
 
     @GetMapping("/snapshots/{version}/resolution")
-    public ResponseEntity<ResolutionReport> resolution(@PathVariable String version) {
-        return ResponseEntity.of(service.getResolution(version));
+    public ResponseEntity<ResolutionReport> resolution(
+            @PathVariable String version,
+            @RequestParam(required = false) String rules) {
+        return ResponseEntity.of(
+                rules == null || rules.isBlank()
+                        ? service.getResolution(version)
+                        : service.getResolution(version, rules));
     }
 
-    /** All entities of the current, single-version view. */
+    /** The rule set id the version's historical conclusion was pinned to at publish time. */
+    @GetMapping("/snapshots/{version}/pinned-rules")
+    public Map<String, Object> pinnedRules(@PathVariable String version) {
+        return service.getResolution(version)
+                .map(r -> java.util.Map.<String, Object>of(
+                        "version", version, "pinnedRules", r.rulesVersion()))
+                .orElseGet(() -> Map.of("version", version, "pinnedRules", ""));
+    }
+
+    /** Compare one data snapshot's conclusions under two rule sets. */
+    @GetMapping("/snapshots/{version}/rule-comparison")
+    public ResolutionComparison compare(
+            @PathVariable String version,
+            @RequestParam String rulesA,
+            @RequestParam String rulesB) {
+        return service.compareRules(version, rulesA, rulesB);
+    }
+
+    /** All registered rule sets plus the currently selected id. */
+    @GetMapping("/rules")
+    public Map<String, Object> listRules() {
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("current", service.currentRulesId());
+        body.put("ruleSets", service.ruleSets().stream()
+                .map(r -> {
+                    Map<String, Object> view = new java.util.LinkedHashMap<>();
+                    view.put("id", r.id());
+                    view.put("description", r.description());
+                    view.put("sourcePriority", r.sourcePriority());
+                    view.put("fields", r.fields());
+                    view.put("contentHash", r.contentHash());
+                    return view;
+                }).toList());
+        return body;
+    }
+
+    /** Atomically select the rule set used for unqualified reads/new version pins. */
+    @PostMapping("/rules/{rulesId}/switch")
+    public ResponseEntity<Map<String, Object>> switchRules(@PathVariable String rulesId) {
+        boolean ok = service.switchRules(rulesId);
+        if (!ok) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("rulesId", rulesId, "switched", false,
+                            "message", "unknown rule set"));
+        }
+        return ResponseEntity.ok(Map.of("rulesId", rulesId, "switched", true,
+                "current", service.currentRulesId()));
+    }
+
+    /**
+     * Entities of the current data version. {@code rules} selects which rule set's
+     * conclusion to read; without it the pinned historical conclusion is returned.
+     */
     @GetMapping("/entities")
-    public List<ResolvedEntity> entities(@RequestParam(required = false) String identifier) {
+    public List<ResolvedEntity> entities(@RequestParam(required = false) String identifier,
+                                         @RequestParam(required = false) String rules) {
+        String version = service.currentVersion().orElse(null);
         if (identifier != null && !identifier.isBlank()) {
+            if (rules != null && !rules.isBlank() && version != null) {
+                return service.resolveIdentifier(version, rules, identifier)
+                        .map(List::of).orElse(List.of());
+            }
             return service.resolveIdentifier(identifier).map(List::of).orElse(List.of());
+        }
+        if (rules != null && !rules.isBlank()) {
+            return service.queryAll(rules);
         }
         return service.queryAll();
     }
@@ -99,5 +168,18 @@ public class AggregatorController {
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Map<String, String>> badRequest(IllegalArgumentException e) {
         return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+    }
+
+    /** Bad/unknown rule sets are rejected explicitly with a distinguishable reason code. */
+    @ExceptionHandler(RuleSetException.class)
+    public ResponseEntity<Map<String, String>> ruleSetRejected(RuleSetException e) {
+        HttpStatus status = e.reason()
+                == com.github.lisama569.biodbaggregatorjava.ruleset.RuleSetFailureReason.UNKNOWN_RULESET
+                ? HttpStatus.NOT_FOUND : HttpStatus.BAD_REQUEST;
+        Map<String, String> body = new java.util.LinkedHashMap<>();
+        body.put("error", e.getMessage());
+        body.put("reason", e.reason().name());
+        body.put("rulesId", e.ruleSetId() == null ? "" : e.ruleSetId());
+        return ResponseEntity.status(status).body(body);
     }
 }

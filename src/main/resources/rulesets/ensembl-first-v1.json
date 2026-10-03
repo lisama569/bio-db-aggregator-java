@@ -1,0 +1,11 @@
+{
+  "id": "ensembl-first-v1",
+  "description": "Alternative rules: Ensembl ranks highest. Useful for comparing the same data snapshot against the default set; historical conclusions stay pinned to their own rules.",
+  "sourcePriority": ["ensembl", "uniprot", "refseq", "genbank", "ncbi"],
+  "fields": {
+    "symbol":   {"strategy": "SOURCE_PRIORITY"},
+    "name":     {"strategy": "PREFER_LONGEST"},
+    "sequence": {"strategy": "SOURCE_PRIORITY"},
+    "organism": {"strategy": "SOURCE_PRIORITY"}
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "id": "test-alt-v1",
+  "description": "test-only alternative: uniprot wins",
+  "sourcePriority": ["uniprot", "refseq", "ensembl"],
+  "fields": {"name": {"strategy": "PREFER_LONGEST"}}
+}
