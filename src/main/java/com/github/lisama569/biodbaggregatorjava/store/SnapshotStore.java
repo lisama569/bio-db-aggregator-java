@@ -54,6 +54,18 @@ public interface SnapshotStore {
      */
     ResolutionReport resolutionUnder(String version, RuleSet ruleSet);
 
+    /**
+     * Produce several conclusions of the SAME version in one atomic step: both reports are
+     * resolved from a single captured {@link SnapshotView} (the same immutable record set),
+     * so a concurrent import/republish, version switch or rule-set switch can never make a
+     * comparison pair straddle old and new data. The version's pinned conclusion itself is
+     * never modified.
+     *
+     * @return the conclusions in the same order as {@code ruleSets}
+     */
+    java.util.List<ResolutionReport> resolutionsUnder(String version,
+                                                       java.util.List<RuleSet> ruleSets);
+
     /** Immutable bundle handed to readers; capturing one guarantees a single-version view. */
     record SnapshotView(List<BioRecord> records,
                         List<RejectedRecord> rejected,

@@ -167,12 +167,28 @@ public class InMemorySnapshotStore implements SnapshotStore {
 
     @Override
     public ResolutionReport resolutionUnder(String version, RuleSet ruleSet) {
-        // Fast lock-free path: the immutable cache map is published with its view.
+        return resolutionsUnder(version, List.of(ruleSet)).get(0);
+    }
+
+    @Override
+    public List<ResolutionReport> resolutionsUnder(String version, List<RuleSet> ruleSets) {
+        // Fast lock-free path: only return when EVERY requested conclusion is already cached
+        // in the SAME immutable view. Otherwise a pair could be assembled half from an old
+        // view (cache hit) and half from a republished new view (cache miss + recompute).
         SnapshotView existing = views.get(version);
         if (existing != null) {
-            ResolutionReport cached = existing.resolutionsByRules().get(ruleSet.id());
-            if (cached != null) {
-                return cached;
+            List<ResolutionReport> allCached = new ArrayList<>();
+            boolean complete = true;
+            for (RuleSet rs : ruleSets) {
+                ResolutionReport cached = existing.resolutionsByRules().get(rs.id());
+                if (cached == null) {
+                    complete = false;
+                    break;
+                }
+                allCached.add(cached);
+            }
+            if (complete) {
+                return List.copyOf(allCached);
             }
         }
         lock.lock();
@@ -181,24 +197,45 @@ public class InMemorySnapshotStore implements SnapshotStore {
             if (view == null) {
                 throw new IllegalArgumentException("unknown snapshot version: " + version);
             }
-            ResolutionReport cached = view.resolutionsByRules().get(ruleSet.id());
-            if (cached != null) {
-                return cached;
+            // Re-check inside the lock: another thread may have filled the cache meanwhile.
+            List<ResolutionReport> allCached = new ArrayList<>();
+            boolean complete = true;
+            for (RuleSet rs : ruleSets) {
+                ResolutionReport cached = view.resolutionsByRules().get(rs.id());
+                if (cached == null) {
+                    complete = false;
+                    break;
+                }
+                allCached.add(cached);
+            }
+            if (complete) {
+                return List.copyOf(allCached);
             }
             Snapshot snapshot = new Snapshot(version, view.records(), view.rejected(),
                     view.conflicts());
-            ResolutionReport report = resolver.resolve(snapshot, ruleSet);
-            Map<String, ResolutionReport> merged = new LinkedHashMap<>(view.resolutionsByRules());
-            merged.put(ruleSet.id(), report);
+            Map<String, ResolutionReport> merged =
+                    new LinkedHashMap<>(view.resolutionsByRules());
+            List<ResolutionReport> answers = new ArrayList<>();
+            for (RuleSet rs : ruleSets) {
+                ResolutionReport report = merged.get(rs.id());
+                if (report == null) {
+                    // Every conclusion in this batch is resolved from the SAME captured
+                    // immutable snapshot, so the comparison pair can never straddle a
+                    // concurrent republish; the pinned conclusion stays untouched.
+                    report = resolver.resolve(snapshot, rs);
+                    merged.put(rs.id(), report);
+                    log.info("alternative resolution cached: version={} rules={} entities={}",
+                            version, rs.id(), report.entities().size());
+                }
+                answers.add(report);
+            }
             // Re-publish one complete immutable view: readers in flight keep the old one
             // and therefore never observe a half-rebuilt rules result.
             SnapshotView updated = new SnapshotView(view.records(), view.rejected(),
                     view.conflicts(), view.pinnedResolution(), view.pinnedRules(),
                     Map.copyOf(merged));
             views.put(version, updated);
-            log.info("alternative resolution cached: version={} rules={} entities={}",
-                    version, ruleSet.id(), report.entities().size());
-            return report;
+            return List.copyOf(answers);
         } finally {
             lock.unlock();
         }

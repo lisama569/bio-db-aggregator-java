@@ -164,9 +164,18 @@ public class DefaultAggregatorService implements AggregatorService {
     @Override
     public ResolutionComparison compareResolutions(String version, String ruleSetA,
                                                    String ruleSetB) {
-        ResolutionReport a = getResolution(version, ruleSetA);
-        ResolutionReport b = getResolution(version, ruleSetB);
-        ResolutionComparison comparisonResult = comparison.compare(a, b);
+        // Resolve both immutable rule sets first; a concurrent catalog reload can never
+        // swap one of them mid-comparison.
+        RuleSet a = ruleSetRegistry.resolve(ruleSetA);
+        RuleSet b = ruleSetRegistry.resolve(ruleSetB);
+        // One atomic store call: both conclusions come from a single captured immutable
+        // snapshot view, so an import/republish, version switch or rule activation in
+        // another thread can never assemble a half-old/half-new comparison pair - and the
+        // version's pinned conclusion is not modified.
+        List<ResolutionReport> reports = store.resolutionsUnder(version, List.of(a, b));
+        ResolutionReport reportA = reports.get(0);
+        ResolutionReport reportB = reports.get(1);
+        ResolutionComparison comparisonResult = comparison.compare(reportA, reportB);
         log.info("resolution comparison: version={} rulesA={} rulesB={} equivalent={} "
                         + "clusterDiffs={} fieldDiffs={} conflictsOnlyA={} conflictsOnlyB={} "
                         + "ambiguitiesOnlyA={} ambiguitiesOnlyB={}",
@@ -177,6 +186,13 @@ public class DefaultAggregatorService implements AggregatorService {
                 comparisonResult.conflictsOnlyUnderB().size(),
                 comparisonResult.ambiguitiesOnlyUnderA().size(),
                 comparisonResult.ambiguitiesOnlyUnderB().size());
+        for (var d : comparisonResult.fieldDifferences()) {
+            log.info("comparison field diff: version={} rulesA={} rulesB={} cluster={} field={} kind={} "
+                            + "A:winner={} value='{}' | B:winner={} value='{}'",
+                    version, ruleSetA, ruleSetB, d.signature(), d.field(), d.kind(),
+                    d.winnerSourceA(), d.winnerValueA(),
+                    d.winnerSourceB(), d.winnerValueB());
+        }
         return comparisonResult;
     }
 

@@ -2,6 +2,7 @@ package com.github.lisama569.biodbaggregatorjava.resolution;
 
 import com.github.lisama569.biodbaggregatorjava.model.EntityClusterDifference;
 import com.github.lisama569.biodbaggregatorjava.model.FieldDecisionDifference;
+import com.github.lisama569.biodbaggregatorjava.model.FieldDifferenceKind;
 import com.github.lisama569.biodbaggregatorjava.model.ResolutionComparison;
 import com.github.lisama569.biodbaggregatorjava.model.ResolutionConflict;
 import com.github.lisama569.biodbaggregatorjava.model.ResolutionReport;
@@ -12,6 +13,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.TreeSet;
 
 /**
@@ -48,23 +50,24 @@ public class ResolutionComparator {
 
         List<FieldDecisionDifference> fieldDiffs = new ArrayList<>();
         for (String sig : byA.keySet()) {
+            ResolvedEntity ea = byA.get(sig);
             ResolvedEntity eb = byB.get(sig);
             if (eb == null) {
+                // cluster present only under A: already reported as a cluster difference
                 continue;
             }
-            ResolvedEntity ea = byA.get(sig);
             addFieldDiff(fieldDiffs, sig, "symbol",
-                    ea.canonicalSymbol(), winnerOf(ea, "symbol"),
-                    eb.canonicalSymbol(), winnerOf(eb, "symbol"));
+                    ea.canonicalSymbol(), winnerSourceOf(ea, "symbol"),
+                    eb.canonicalSymbol(), winnerSourceOf(eb, "symbol"));
             addFieldDiff(fieldDiffs, sig, "name",
-                    ea.canonicalName(), winnerOf(ea, "name"),
-                    eb.canonicalName(), winnerOf(eb, "name"));
+                    ea.canonicalName(), winnerSourceOf(ea, "name"),
+                    eb.canonicalName(), winnerSourceOf(eb, "name"));
             addFieldDiff(fieldDiffs, sig, "sequence",
-                    ea.sequence(), winnerOf(ea, "sequence"),
-                    eb.sequence(), winnerOf(eb, "sequence"));
+                    ea.sequence(), winnerSourceOf(ea, "sequence"),
+                    eb.sequence(), winnerSourceOf(eb, "sequence"));
             addFieldDiff(fieldDiffs, sig, "organism",
-                    ea.organism(), winnerOf(ea, "organism"),
-                    eb.organism(), winnerOf(eb, "organism"));
+                    ea.organism(), winnerSourceOf(ea, "organism"),
+                    eb.organism(), winnerSourceOf(eb, "organism"));
         }
 
         List<String> conflictsA = describeConflicts(a);
@@ -102,29 +105,33 @@ public class ResolutionComparator {
         return map;
     }
 
-    private static String winnerOf(ResolvedEntity e, String field) {
-        return e.fieldConflicts().stream()
-                .filter(c -> c.field().equals(field))
-                .map(ResolutionConflict::winnerSource)
-                .findFirst()
-                .orElseGet(() -> {
-                    // No conflict recorded: the winner is the entity's only contributor for
-                    // that field (or the highest-priority one). Derive from identifiers is
-                    // impossible without raw members, so return the contributing source when
-                    // exactly one; otherwise null (value equality still drives the diff).
-                    return null;
-                });
+    /**
+     * Winning source of an adjudicated field: the resolver records it for every field that
+     * has a non-blank winner (even for single contributors and unanimous values, where no
+     * conflict object exists). Returns {@code null} only for a field with no contributor on
+     * that side, which is exactly the "absent on one side" boundary the comparison must
+     * neither miss nor hallucinate.
+     */
+    private static String winnerSourceOf(ResolvedEntity e, String field) {
+        return e.fieldWinnerSources() == null ? null : e.fieldWinnerSources().get(field);
     }
 
     private static void addFieldDiff(List<FieldDecisionDifference> out, String sig, String field,
                                      String valueA, String sourceA,
                                      String valueB, String sourceB) {
-        boolean changed = valueA == null ? valueB != null : !valueA.equals(valueB);
-        if (changed || (sourceA != null && !sourceA.equals(sourceB))) {
-            if (changed || sourceB != null) {
-                out.add(new FieldDecisionDifference(sig, field, sourceA, valueA, sourceB, valueB));
-            }
+        boolean valueChanged = !Objects.equals(valueA, valueB);
+        boolean sourceChanged = !Objects.equals(sourceA, sourceB);
+        if (!valueChanged && !sourceChanged) {
+            // Same value AND same credited source: identical adjudication, never a diff.
+            return;
         }
+        FieldDifferenceKind kind = valueChanged && sourceChanged
+                ? FieldDifferenceKind.VALUE_AND_SOURCE_CHANGED
+                : valueChanged ? FieldDifferenceKind.VALUE_CHANGED
+                : FieldDifferenceKind.WINNER_SOURCE_CHANGED;
+        // A reported diff makes the overall comparison non-equivalent regardless of kind;
+        // both sides' winning source and value are carried verbatim (null when absent).
+        out.add(new FieldDecisionDifference(sig, field, kind, sourceA, valueA, sourceB, valueB));
     }
 
     private List<String> describeConflicts(ResolutionReport r) {

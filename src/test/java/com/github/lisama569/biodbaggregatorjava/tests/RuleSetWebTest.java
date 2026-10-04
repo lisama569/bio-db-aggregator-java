@@ -61,13 +61,35 @@ class RuleSetWebTest {
         mvc.perform(get("/api/snapshots/w1/resolution"))
                 .andExpect(jsonPath("$.entities[0].canonicalName").value("refseq name"));
 
-        // comparison flags the name-winner difference
+        // comparison flags both:
+        //  - symbol keeps the SAME value "HBB" but its credited winner flips
+        //    refseq -> ensembl, which must still be reported (attribution change);
+        //  - name changes both winner and value.
         mvc.perform(get("/api/snapshots/w1/resolution/compare")
                         .param("rulesA", "priority-rules-v1")
                         .param("rulesB", "priority-rules-ensembl-v1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.equivalent").value(false))
-                .andExpect(jsonPath("$.fieldDifferences[0].field").value("name"));
+                .andExpect(jsonPath(
+                        "$.fieldDifferences[?(@.field=='symbol')].kind")
+                        .value(org.hamcrest.Matchers.everyItem(
+                                org.hamcrest.Matchers.is("WINNER_SOURCE_CHANGED"))))
+                .andExpect(jsonPath(
+                        "$.fieldDifferences[?(@.field=='symbol')].winnerValueA")
+                        .value(org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.is("HBB"))))
+                .andExpect(jsonPath(
+                        "$.fieldDifferences[?(@.field=='symbol')].winnerValueB")
+                        .value(org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.is("HBB"))))
+                .andExpect(jsonPath(
+                        "$.fieldDifferences[?(@.field=='symbol')].winnerSourceA")
+                        .value(org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.is("refseq"))))
+                .andExpect(jsonPath(
+                        "$.fieldDifferences[?(@.field=='symbol')].winnerSourceB")
+                        .value(org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.is("ensembl"))))
+                .andExpect(jsonPath(
+                        "$.fieldDifferences[?(@.field=='name')].kind")
+                        .value(org.hamcrest.Matchers.everyItem(
+                                org.hamcrest.Matchers.is("VALUE_AND_SOURCE_CHANGED"))));
 
         // scoped entity query
         mvc.perform(get("/api/entities/NM1").param("rules", "priority-rules-ensembl-v1"))

@@ -147,10 +147,50 @@ REC|id|type|symbol|name|sequence|organism|ns:val;ns:val
 返回 `ResolutionComparison`：
 
 - 实体合并是否一致（以成员 home token 排序签名识别同一簇，`clusterDifferences`）；
-- 字段最终胜出者与胜出值的变化（`fieldDifferences`：field / 双方 winnerSource+value）；
+- 字段最终胜出者与胜出值的变化（`fieldDifferences`，覆盖
+  `symbol/name/sequence/organism` 四个字段）；
 - 冲突归因差异（`conflictsOnlyUnderA/B`）；
 - 歧义差异（`ambiguitiesOnlyUnderA/B`：悬挂引用、跨类型碰撞是否变化）；
 - `equivalent=true` 表示四方面均无差异。
+
+**字段差异怎么判定（值变化与署名变化分开看）。** 解析时每个字段都会记录"最终由哪个
+来源署名"（`ResolvedEntity.fieldWinnerSources`）——即使该字段只有一个来源提供值、或所有
+来源给出的值完全相同（此时没有 `ResolutionConflict` 冲突对象），署名也照样留痕。对比时
+对同一簇的每个字段分别比较"胜出值"和"胜出来源"两个维度：
+
+| 情况 | 是否报差异 | `kind` |
+|---|---|---|
+| 值变了，胜出来源也变了 | 报 | `VALUE_AND_SOURCE_CHANGED` |
+| **只有值变了**（署名来源没变） | 报 | `VALUE_CHANGED` |
+| **值一模一样，但最终署名来源变了**（如 A 套下 refseq 赢、B 套下 uniprot 赢，值相同） | **报** | `WINNER_SOURCE_CHANGED` |
+| 值和来源都没变 | 不报，也不计入差异 | — |
+
+因此"换了规则后最终由谁署名变了、但值没变"正是会被明确报出的差异，且**绝不算两边等价**
+（`equivalent=false`）。每条 `FieldDecisionDifference` 都同时带回双方的
+`winnerSourceA/winnerValueA/winnerSourceB/winnerValueB`，两侧各自的署名与胜出值一目了然。
+
+**兼容边界（不漏报、不误报）：**
+
+- **单来源字段**：某字段只有一个来源给值时，两套规则下署名都是该来源，不报差异
+  （即使该实体整体是多来源合并实体，其他字段署名翻转也不影响它）。
+- **单侧取不到值的字段**：字段在一侧有胜出值、另一侧无任何非空贡献时，按"值与署名都
+  从有到无"报一条差异（`VALUE_AND_SOURCE_CHANGED`），缺值一侧的 source/value 为 `null`，
+  不会虚构一个胜者。
+- **只出现在一侧的实体簇**：作为 `clusterDifferences` 报告，不重复扫描其字段。
+- **同一份数据 + 同一套规则跟自己比**：四类差异全空，恒为 `equivalent=true`。
+- 实体簇以成员 home token 排序签名匹配（不依赖会随优先级变化的 entityKey），
+  四个被裁决字段全部覆盖。
+
+**对比用的两份结论各自都是完整按指定规则算出来的：**
+
+- 两份结论都从**同一个不可变快照视图**一次性算出（store 的
+  `resolutionsUnder(version, [rulesA, rulesB])` 原子批处理）：正在对比时，其他线程并发
+  导入/重发（republish）、切版本或切激活规则，对比结果不会拼成"一半旧数据一半新数据"，
+  也不会时有时无；
+- 两份结论与单独 `GET .../resolution?rules=<id>` 指定同一套规则查到的结果完全一致；
+  对比只读缓存/按需计算，**不改动**该版本原先钉住的那份盖章结论；
+- 解析是纯函数且输出全序化，同一份数据配同一两套规则重复对比，结果逐字节一致
+  （方向相反的 A/B 对调同理，只是两侧互换）。
 
 ### 2.4 合并依据（等价关系）
 - 每条记录拥有其“本来源身份 token”：`source:localId`。
@@ -182,6 +222,10 @@ refseq > uniprot > ensembl > genbank > ncbi
 只要更低优先级来源给出了**不同的非空值**，就生成一条 `ResolutionConflict`，记录
 `field / winnerSource / winnerValue / loserSources / loserValues`（loser 按该字段顺序排序），
 冲突被显式保留而不是被吞掉。
+
+此外，**每个有非空值的字段都会记录最终胜出来源**
+（`ResolvedEntity.fieldWinnerSources`），不依赖冲突对象是否存在——单来源字段、所有来源
+取值一致（无冲突）的字段同样留痕，这是 2.3 节"值相同但署名翻转"能被对比识别的基础。
 
 - 实体键：`TYPE:全局顺序最高来源:localId`（同来源并列按 localId 升序）。
 - 实体、成员、歧义、map 迭代全部全序化，**同一快照 + 同一规则集**永远产生字节级一致的结论。
@@ -227,7 +271,7 @@ refseq > uniprot > ensembl > genbank > ncbi
 | GET  | `/api/snapshots` | 版本列表（发布顺序）、current 与当前激活规则 |
 | GET  | `/api/snapshots/{version}/snapshot` | 该版本归一化记录、拒绝、来源内冲突 |
 | GET  | `/api/snapshots/{version}/resolution[?rules=]` | 无 `rules` 返回**盖章**结论；带 `rules` 用指定规则复现（不改动盖章结论）；未知规则 400 |
-| GET  | `/api/snapshots/{version}/resolution/compare?rulesA=&rulesB=` | 同一数据在两套规则下的合并/字段胜者/冲突/歧义差异 |
+| GET  | `/api/snapshots/{version}/resolution/compare?rulesA=&rulesB=` | 同一数据在两套规则下的合并/字段差异（值变化 `VALUE_CHANGED`、同值仅署名变化 `WINNER_SOURCE_CHANGED`、两者皆变 `VALUE_AND_SOURCE_CHANGED`）/冲突/歧义差异；两份结论从同一不可变视图原子算出 |
 | GET  | `/api/entities?identifier=[&rules=]` | 在 current 版本按 local id / `ns:id` / 实体键解析；省略 `rules` 用该版本盖章规则 |
 | GET  | `/api/entities/{identifier}[?rules=]` | 同上（路径形式） |
 | GET  | `/api/rules` | 列出已加载规则集及激活 id |
@@ -294,12 +338,25 @@ mvn -o spring-boot:run
   坏规则被拒绝且 7 类原因可区分（重复来源、未声明来源、空优先级、未知字段、坏 JSON、
   缺 id、跨文件重复 id）；直接 `validate()` 拒绝；注册表激活/未知 id 拒绝/ reload 后
   已钉住的不可变实例不变；坏目录启动时明确失败。
-- **RuleSetReproducibilityIntegrationTest**（5 项）：同一数据在两套规则下并存且两份结论
+- **RuleSetReproducibilityIntegrationTest**（6 项）：同一数据在两套规则下并存且两份结论
   都保留；切换激活规则后老版本盖章结论原样可取、并可显式用新规则复现；给已盖章版本
   指定另一套规则导入被 `RULE_SET_MISMATCH` 拒绝；未知规则集不退回默认；strict 规则集
   对未声明来源给出可区分拒绝。
-- **RuleSetWebTest**（1 项）：规则列表/激活/ reload、按 `rules` 取结论与对比、
-  `RULE_SET_MISMATCH` 409、未知规则 400。
+- **ResolutionComparatorTest**（7 项，对比业务边界纯单测）：值相同但胜出来源翻转时
+  symbol/name/sequence/organism 四字段全部报 `WINNER_SOURCE_CHANGED` 且不等价；只有值不同
+  报 `VALUE_CHANGED`；值与来源都变报 `VALUE_AND_SOURCE_CHANGED`；值和来源都相同不报、
+  同一结论自比无差异；单来源字段两侧一致不误报；字段只在一侧有值只报一条且另一侧
+  source/value 为 `null`；只出现在一侧的簇只报簇差异。
+- **ResolutionComparisonIntegrationTest**（3 项，端到端）：真实解析快照 + 两套内置规则，
+  四字段值全相同仅署名 refseq→ensembl 翻转时全部报出；单记录簇与"仅一个来源给值"的
+  sequence 字段不误报，同值的 name/organism/symbol 署名翻转正确报出；对比结论与单独
+  指定规则的查询一致、不改动盖章结论、自比无差异、重复对比逐字节一致。
+- **ConcurrentComparisonConsistencyTest**（1 项）：对比进行中并发幂等导入（强制 republish
+  /重算）、版本切换、规则激活，约 9 万次对比逐一校验——每次都是同一数据版本 + 同一对
+  规则的完整结论，四条差异恒为"同值仅署名翻转"且与基准结果完全相等，无新旧拼接、无
+  时有时无。
+- **RuleSetWebTest**（1 项）：规则列表/激活/ reload、按 `rules` 取结论与对比（含"symbol
+  值相同仅署名翻转也要报出"的 JSON 断言）、`RULE_SET_MISMATCH` 409、未知规则 400。
 - **ConcurrentRuleConsistencyTest**（1 项）：查询（盖章 + 指定规则）、幂等导入、版本切换、
   规则激活同时并发，校验每次读取都是单一 `(版本,规则)` 的完整结论（约数千万次查询，
   无混合、无新旧 winner 串扰），同数据同规则结论恒定。
@@ -307,8 +364,13 @@ mvn -o spring-boot:run
 > 测试日志会打印**输入记录、数据版本、使用的规则集与判定依据**（SLF4J），例如解析器
 > 测试打印每条 ACCEPTED/REJECTED/CONFLICT 及原因；resolver 对每个实体打印
 > `snapshot / rules / entityKey / identifiers / conflicts / 每个字段 winner+生效优先级`，
-> 歧义与整轮统计也带 `snapshot + rules`；规则加载打印每个文件的接受/拒绝原因，
-> 对比接口打印两个规则 id 与四类差异计数。
+> 歧义与整轮统计也带 `snapshot + rules`；规则加载打印每个文件的接受/拒绝原因。
+> 对比相关日志包含：`resolution comparison: version=<数据版本> rulesA=<规则A> rulesB=<规则B>`
+> 与四类差异计数，并对每条字段差异打印
+> `cluster=<签名> field=<字段> kind=<VALUE_CHANGED/WINNER_SOURCE_CHANGED/...> `
+> `A:winner=<A 侧胜出来源> value='<A 侧胜出值>' | B:winner=... value='...'`；
+> 新增对比测试的每条用例还以 `[business=<业务场景>]` 前缀打印覆盖的业务、用例数据版本、
+> 两套规则、每个字段最终由谁胜出及判定结果。
 
 ### 手工验证规则复现（离线）
 
@@ -321,4 +383,16 @@ curl -s -X POST 'localhost:8080/api/snapshots/demo/imports?source=refseq&format=
 curl -s -X POST 'localhost:8080/api/snapshots/demo/imports?source=ensembl&format=FLAT&rules=priority-rules-v1' \
   -H 'Content-Type: text/plain' --data $'REC|E1|gene|HBB|ensembl name|||refseq:NM1\n'
 curl -s 'localhost:8080/api/snapshots/demo/resolution?rules=priority-rules-ensembl-v1'
+
+# 同值署名翻转的最小验证：两边 symbol 都是 HBB，但 A 套 refseq 署名、B 套 ensembl 署名；
+# name 两边值不同。对比结果里 symbol 是 WINNER_SOURCE_CHANGED、name 是
+# VALUE_AND_SOURCE_CHANGED，equivalent=false；同一套规则自比则 equivalent=true。
+curl -s 'localhost:8080/api/snapshots/demo/resolution/compare?rulesA=priority-rules-v1&rulesB=priority-rules-ensembl-v1'
+curl -s 'localhost:8080/api/snapshots/demo/resolution/compare?rulesA=priority-rules-v1&rulesB=priority-rules-v1'
+```
+
+只跑对比相关用例并在日志中查看数据版本、两套规则、每字段胜者与判定依据：
+
+```bash
+mvn -o -Dtest='ResolutionComparatorTest,ResolutionComparisonIntegrationTest,ConcurrentComparisonConsistencyTest' test
 ```

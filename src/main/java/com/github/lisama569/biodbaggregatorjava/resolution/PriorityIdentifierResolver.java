@@ -236,28 +236,15 @@ public class PriorityIdentifierResolver implements IdentifierResolver {
     private String describeBasis(List<BioRecord> members, RuleSet ruleSet, ResolvedEntity entity) {
         List<String> perField = new ArrayList<>();
         for (String field : FIELDS) {
-            String winner = winnerSourceFor(members, ruleSet, field);
+            // Read the credited winner straight from the produced entity, so the logged
+            // basis can never drift from the returned conclusion.
+            String winner = entity.fieldWinnerSources().get(field);
             if (winner != null) {
                 perField.add(field + "<-" + winner + "(order=" + ruleSet.priorityFor(field) + ")");
             }
         }
         return "contributing=" + entity.contributingSources() + " globalPriority="
                 + ruleSet.sourcePriority() + " fields={" + String.join("; ", perField) + "}";
-    }
-
-    private String winnerSourceFor(List<BioRecord> members, RuleSet ruleSet, String field) {
-        String winnerSource = null;
-        int winnerRank = Integer.MAX_VALUE;
-        for (BioRecord m : members) {
-            if (getter(field).apply(m) != null) {
-                int idx = effectiveIndex(ruleSet, field, m.source(), members);
-                if (idx < winnerRank) {
-                    winnerRank = idx;
-                    winnerSource = m.source();
-                }
-            }
-        }
-        return winnerSource;
     }
 
     private int effectiveIndex(RuleSet ruleSet, String field, String source,
@@ -306,10 +293,11 @@ public class PriorityIdentifierResolver implements IdentifierResolver {
         contributing.sort(globalOrder);
 
         List<ResolutionConflict> conflicts = new ArrayList<>();
-        String symbol = chooseField(members, ruleSet, "symbol", conflicts);
-        String name = chooseField(members, ruleSet, "name", conflicts);
-        String sequence = chooseField(members, ruleSet, "sequence", conflicts);
-        String organism = chooseField(members, ruleSet, "organism", conflicts);
+        Map<String, String> winnerSources = new LinkedHashMap<>();
+        String symbol = chooseField(members, ruleSet, "symbol", conflicts, winnerSources);
+        String name = chooseField(members, ruleSet, "name", conflicts, winnerSources);
+        String sequence = chooseField(members, ruleSet, "sequence", conflicts, winnerSources);
+        String organism = chooseField(members, ruleSet, "organism", conflicts, winnerSources);
 
         String entityKey = type.name() + ":" + anchor.source() + ":" + anchor.localId();
         return new ResolvedEntity(
@@ -322,6 +310,7 @@ public class PriorityIdentifierResolver implements IdentifierResolver {
                 Map.copyOf(identifiersBySource),
                 List.copyOf(conflicts),
                 List.copyOf(contributing),
+                Map.copyOf(winnerSources),
                 version,
                 ruleSet.id());
     }
@@ -329,8 +318,8 @@ public class PriorityIdentifierResolver implements IdentifierResolver {
     private String chooseField(List<BioRecord> members,
                                RuleSet ruleSet,
                                String field,
-                               List<ResolutionConflict> conflicts) {
-        List<String> priority = ruleSet.priorityFor(field);
+                               List<ResolutionConflict> conflicts,
+                               Map<String, String> winnerSources) {
         // rank each contributing source by this field's effective order
         String winnerSource = null;
         int winnerRank = Integer.MAX_VALUE;
@@ -349,6 +338,11 @@ public class PriorityIdentifierResolver implements IdentifierResolver {
         if (winnerValue == null) {
             return null;
         }
+        // Record the credited winner for EVERY adjudicated field, including when there was
+        // only one contributor or all sources agreed (in which cases no conflict exists).
+        // Comparisons of two rule sets therefore see attribution changes even when the
+        // winning value itself is identical.
+        winnerSources.put(field, winnerSource);
         // retain one differing loser value per source, ordered by the field's source order
         Map<String, String> loserBySource = new LinkedHashMap<>();
         for (BioRecord m : members) {
