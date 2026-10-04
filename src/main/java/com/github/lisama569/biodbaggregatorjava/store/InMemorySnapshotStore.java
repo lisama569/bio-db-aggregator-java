@@ -204,6 +204,40 @@ public class InMemorySnapshotStore implements SnapshotStore {
         }
     }
 
+    @Override
+    public ResolutionReport resolutionUnder(SnapshotView view, RuleSet ruleSet) {
+        ResolutionReport cached = view.resolutionsByRules().get(ruleSet.id());
+        if (cached != null) {
+            return cached;
+        }
+        // Compute from the captured view's records: a concurrent import may already have
+        // republished a newer view, but this conclusion must describe exactly the data
+        // the caller captured, so both sides of a comparison stay on the same data.
+        String version = view.pinnedResolution().snapshotVersion();
+        Snapshot snapshot = new Snapshot(version, view.records(), view.rejected(),
+                view.conflicts());
+        ResolutionReport report = resolver.resolve(snapshot, ruleSet);
+        lock.lock();
+        try {
+            // Cache back only if the captured view is still the published one; caching a
+            // conclusion computed from older records into a newer view would be wrong.
+            SnapshotView latest = views.get(version);
+            if (latest == view) {
+                Map<String, ResolutionReport> merged =
+                        new LinkedHashMap<>(latest.resolutionsByRules());
+                merged.put(ruleSet.id(), report);
+                views.put(version, new SnapshotView(latest.records(), latest.rejected(),
+                        latest.conflicts(), latest.pinnedResolution(), latest.pinnedRules(),
+                        Map.copyOf(merged)));
+                log.info("alternative resolution cached: version={} rules={} entities={}",
+                        version, ruleSet.id(), report.entities().size());
+            }
+        } finally {
+            lock.unlock();
+        }
+        return report;
+    }
+
     /** Rebuild one fully deterministic immutable view from all stored imports. */
     private SnapshotView republish(String version, RuleSet active) {
         Map<String, SourceImport> perSource = imports.get(version);

@@ -54,6 +54,15 @@ public interface SnapshotStore {
      */
     ResolutionReport resolutionUnder(String version, RuleSet ruleSet);
 
+    /**
+     * Resolve under an explicit rule set against one previously captured
+     * {@link SnapshotView}. The conclusion is computed from exactly that view's records,
+     * so pairing two of these calls guarantees both sides of a comparison describe the
+     * same data even while imports republish the version concurrently. The result is
+     * cached back only while the captured view is still the published one.
+     */
+    ResolutionReport resolutionUnder(SnapshotView view, RuleSet ruleSet);
+
     /** Immutable bundle handed to readers; capturing one guarantees a single-version view. */
     record SnapshotView(List<BioRecord> records,
                         List<RejectedRecord> rejected,

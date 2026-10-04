@@ -164,20 +164,47 @@ public class DefaultAggregatorService implements AggregatorService {
     @Override
     public ResolutionComparison compareResolutions(String version, String ruleSetA,
                                                    String ruleSetB) {
-        ResolutionReport a = getResolution(version, ruleSetA);
-        ResolutionReport b = getResolution(version, ruleSetB);
+        RuleSet rulesA = ruleSetRegistry.resolve(ruleSetA);
+        RuleSet rulesB = ruleSetRegistry.resolve(ruleSetB);
+        // Capture ONE immutable view and derive both conclusions from it: a concurrent
+        // import / version switch / rule switch can never split the comparison into
+        // halves computed from different data or leave it half old-rules/half new-rules.
+        SnapshotStore.SnapshotView view = store.view(version)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "unknown snapshot version: " + version));
+        ResolutionReport a = store.resolutionUnder(view, rulesA);
+        ResolutionReport b = store.resolutionUnder(view, rulesB);
+        logFieldWinners(version, rulesA.id(), a);
+        logFieldWinners(version, rulesB.id(), b);
         ResolutionComparison comparisonResult = comparison.compare(a, b);
         log.info("resolution comparison: version={} rulesA={} rulesB={} equivalent={} "
                         + "clusterDiffs={} fieldDiffs={} conflictsOnlyA={} conflictsOnlyB={} "
                         + "ambiguitiesOnlyA={} ambiguitiesOnlyB={}",
-                version, ruleSetA, ruleSetB, comparisonResult.equivalent(),
+                version, rulesA.id(), rulesB.id(), comparisonResult.equivalent(),
                 comparisonResult.clusterDifferences().size(),
                 comparisonResult.fieldDifferences().size(),
                 comparisonResult.conflictsOnlyUnderA().size(),
                 comparisonResult.conflictsOnlyUnderB().size(),
                 comparisonResult.ambiguitiesOnlyUnderA().size(),
                 comparisonResult.ambiguitiesOnlyUnderB().size());
+        for (var d : comparisonResult.fieldDifferences()) {
+            log.info("comparison field diff: version={} rulesA={} rulesB={} cluster={} "
+                            + "field={} A[{}='{}'] B[{}='{}'] valueChanged={} winnerSourceChanged={}",
+                    version, rulesA.id(), rulesB.id(), d.signature(), d.field(),
+                    d.winnerSourceA(), d.winnerValueA(), d.winnerSourceB(), d.winnerValueB(),
+                    d.valueChanged(), d.winnerSourceChanged());
+        }
         return comparisonResult;
+    }
+
+    /** Per-entity field adjudication outcome of one side of a comparison. */
+    private static void logFieldWinners(String version, String rulesId, ResolutionReport r) {
+        for (ResolvedEntity e : r.entities()) {
+            log.info("comparison side: version={} rules={} entityKey={} fieldWinners={} "
+                            + "values={symbol='{}', name='{}', sequence='{}', organism='{}'}",
+                    version, rulesId, e.entityKey(), e.fieldWinners(),
+                    e.canonicalSymbol(), e.canonicalName(), e.sequence(), e.organism());
+        }
     }
 
     /**

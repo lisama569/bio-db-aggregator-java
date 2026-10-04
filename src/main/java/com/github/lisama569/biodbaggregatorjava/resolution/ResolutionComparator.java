@@ -54,17 +54,17 @@ public class ResolutionComparator {
             }
             ResolvedEntity ea = byA.get(sig);
             addFieldDiff(fieldDiffs, sig, "symbol",
-                    ea.canonicalSymbol(), winnerOf(ea, "symbol"),
-                    eb.canonicalSymbol(), winnerOf(eb, "symbol"));
+                    ea.canonicalSymbol(), ea.fieldWinner("symbol"),
+                    eb.canonicalSymbol(), eb.fieldWinner("symbol"));
             addFieldDiff(fieldDiffs, sig, "name",
-                    ea.canonicalName(), winnerOf(ea, "name"),
-                    eb.canonicalName(), winnerOf(eb, "name"));
+                    ea.canonicalName(), ea.fieldWinner("name"),
+                    eb.canonicalName(), eb.fieldWinner("name"));
             addFieldDiff(fieldDiffs, sig, "sequence",
-                    ea.sequence(), winnerOf(ea, "sequence"),
-                    eb.sequence(), winnerOf(eb, "sequence"));
+                    ea.sequence(), ea.fieldWinner("sequence"),
+                    eb.sequence(), eb.fieldWinner("sequence"));
             addFieldDiff(fieldDiffs, sig, "organism",
-                    ea.organism(), winnerOf(ea, "organism"),
-                    eb.organism(), winnerOf(eb, "organism"));
+                    ea.organism(), ea.fieldWinner("organism"),
+                    eb.organism(), eb.fieldWinner("organism"));
         }
 
         List<String> conflictsA = describeConflicts(a);
@@ -102,28 +102,20 @@ public class ResolutionComparator {
         return map;
     }
 
-    private static String winnerOf(ResolvedEntity e, String field) {
-        return e.fieldConflicts().stream()
-                .filter(c -> c.field().equals(field))
-                .map(ResolutionConflict::winnerSource)
-                .findFirst()
-                .orElseGet(() -> {
-                    // No conflict recorded: the winner is the entity's only contributor for
-                    // that field (or the highest-priority one). Derive from identifiers is
-                    // impossible without raw members, so return the contributing source when
-                    // exactly one; otherwise null (value equality still drives the diff).
-                    return null;
-                });
-    }
-
+    /**
+     * A field differs when its winning value changed OR its winning source changed -
+     * including the case where the value is identical on both sides but a different
+     * source now signs it. Null-safe: a field absent on one side (null value, null
+     * winner) differs from any present field; absent on both sides is no difference.
+     */
     private static void addFieldDiff(List<FieldDecisionDifference> out, String sig, String field,
                                      String valueA, String sourceA,
                                      String valueB, String sourceB) {
-        boolean changed = valueA == null ? valueB != null : !valueA.equals(valueB);
-        if (changed || (sourceA != null && !sourceA.equals(sourceB))) {
-            if (changed || sourceB != null) {
-                out.add(new FieldDecisionDifference(sig, field, sourceA, valueA, sourceB, valueB));
-            }
+        boolean valueChanged = !java.util.Objects.equals(valueA, valueB);
+        boolean sourceChanged = !java.util.Objects.equals(sourceA, sourceB);
+        if (valueChanged || sourceChanged) {
+            out.add(new FieldDecisionDifference(sig, field, sourceA, valueA, sourceB, valueB,
+                    valueChanged, sourceChanged));
         }
     }
 

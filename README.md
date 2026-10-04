@@ -147,10 +147,29 @@ REC|id|type|symbol|name|sequence|organism|ns:val;ns:val
 返回 `ResolutionComparison`：
 
 - 实体合并是否一致（以成员 home token 排序签名识别同一簇，`clusterDifferences`）；
-- 字段最终胜出者与胜出值的变化（`fieldDifferences`：field / 双方 winnerSource+value）；
+- 字段最终裁决的变化（`fieldDifferences`），每个字段给出**双方各自的胜出来源与胜出值**
+  （`winnerSourceA/winnerValueA/winnerSourceB/winnerValueB`），并用两个标志区分变化类型：
+  - `valueChanged=true`：胜出**值**变了（含一侧取不到值 null vs 有值）；
+  - `winnerSourceChanged=true`：胜出**来源**变了——**即使两侧胜出值完全相同也照报**。
+    例如 symbol 两边都是 `HBB`，但规则 A 下由 refseq 署名、规则 B 下由 ensembl 署名，
+    这是一条 `valueChanged=false, winnerSourceChanged=true` 的差异；
 - 冲突归因差异（`conflictsOnlyUnderA/B`）；
 - 歧义差异（`ambiguitiesOnlyUnderA/B`：悬挂引用、跨类型碰撞是否变化）；
-- `equivalent=true` 表示四方面均无差异。
+- `equivalent=true` 当且仅当四方面均无差异——**只换署名来源也算有差异**。
+
+实现要点与兼容边界：
+
+- 每个 `ResolvedEntity` 带 `fieldWinners`（field → 胜出来源），在裁决时逐字段记录，
+  **不依赖是否有冲突留痕**（值一致时本不产生 `ResolutionConflict`），覆盖
+  `symbol/name/sequence/organism` 四个字段；字段无值时无对应条目（两侧都为 null 即无差异）。
+- 单来源实体、簇内只有一个来源提供某字段时，两套规则下胜出者相同 → 不报差异，
+  既不漏报也不误报。
+- 对比的两份结论各自按指定规则集**完整重算**，与单独 `GET .../resolution?rules=<id>`
+  查同一版本的结果一致；对比不会改动该版本钉住（pinned）的结论。
+- 对比开始时**一次性捕获该版本的不可变视图**，两侧结论都从这份视图计算：并发导入、
+  切版本、切激活规则不会把对比拼成一半旧数据一半新数据、或一半旧规则一半新规则；
+  同一份数据配同两套规则重复对比，结果完全一致（记录级 equals 成立）。
+- 同一版本用同一套规则与自己对比，恒为 `equivalent=true` 且所有差异列表为空。
 
 ### 2.4 合并依据（等价关系）
 - 每条记录拥有其“本来源身份 token”：`source:localId`。
@@ -252,7 +271,8 @@ curl -s 'http://localhost:8080/api/snapshots/v1/resolution'
 # 明确用另一套规则复现同一份数据
 curl -s 'http://localhost:8080/api/snapshots/v1/resolution?rules=priority-rules-ensembl-v1'
 
-# 对比两套规则
+# 对比两套规则（fieldDifferences 中 valueChanged/winnerSourceChanged 区分
+# “值变了”与“只换了署名来源”；值相同仅来源翻转也会列出）
 curl -s 'http://localhost:8080/api/snapshots/v1/resolution/compare?rulesA=priority-rules-v1&rulesB=priority-rules-ensembl-v1'
 
 # 切换激活规则 / 重新扫描本地规则文件
@@ -272,6 +292,9 @@ mvn -o compile
 
 # 运行全部测试（离线）
 mvn -o test
+
+# 只跑对比相关测试（日志可见数据版本、两套规则、每字段胜出者与判定依据）
+mvn -o test -Dtest='ResolutionComparisonTest,ConcurrentComparisonConsistencyTest'
 
 # 启动服务（可选，随后用上面的 curl 验证）
 mvn -o spring-boot:run
@@ -300,6 +323,13 @@ mvn -o spring-boot:run
   对未声明来源给出可区分拒绝。
 - **RuleSetWebTest**（1 项）：规则列表/激活/ reload、按 `rules` 取结论与对比、
   `RULE_SET_MISMATCH` 409、未知规则 400。
+- **ResolutionComparisonTest**（3 项）：值相同但胜出来源不同（symbol/name/sequence/
+  organism 全覆盖）必须报差异且不算等价；只有值不同、值与来源都相同、单来源实体、
+  簇内单来源字段、字段缺失等边界不漏报不误报；自比恒等价且为空、重复对比结果一致；
+  对比两侧与单独按规则集查询的结论逐项一致，且不改写版本钉住的结论。
+- **ConcurrentComparisonConsistencyTest**（1 项）：并发导入（幂等重放 + 另一版本新增
+  来源）、切版本、切激活规则的同时，稳定版本的对比结果与基线逐字节一致、自比恒为空；
+  增长中版本的对比始终内部自洽（equivalent 与差异列表一致、版本戳精确）。
 - **ConcurrentRuleConsistencyTest**（1 项）：查询（盖章 + 指定规则）、幂等导入、版本切换、
   规则激活同时并发，校验每次读取都是单一 `(版本,规则)` 的完整结论（约数千万次查询，
   无混合、无新旧 winner 串扰），同数据同规则结论恒定。
@@ -307,8 +337,10 @@ mvn -o spring-boot:run
 > 测试日志会打印**输入记录、数据版本、使用的规则集与判定依据**（SLF4J），例如解析器
 > 测试打印每条 ACCEPTED/REJECTED/CONFLICT 及原因；resolver 对每个实体打印
 > `snapshot / rules / entityKey / identifiers / conflicts / 每个字段 winner+生效优先级`，
-> 歧义与整轮统计也带 `snapshot + rules`；规则加载打印每个文件的接受/拒绝原因，
-> 对比接口打印两个规则 id 与四类差异计数。
+> 歧义与整轮统计也带 `snapshot + rules`；规则加载打印每个文件的接受/拒绝原因；
+> 对比会打印数据版本、两套规则 id、两侧每个实体的 `fieldWinners` 与胜出值、每条字段
+> 差异的双方胜出来源/胜出值与 `valueChanged`/`winnerSourceChanged` 标志，以及四类差异
+> 计数汇总。
 
 ### 手工验证规则复现（离线）
 

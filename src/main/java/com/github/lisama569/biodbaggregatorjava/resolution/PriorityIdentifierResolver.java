@@ -306,10 +306,11 @@ public class PriorityIdentifierResolver implements IdentifierResolver {
         contributing.sort(globalOrder);
 
         List<ResolutionConflict> conflicts = new ArrayList<>();
-        String symbol = chooseField(members, ruleSet, "symbol", conflicts);
-        String name = chooseField(members, ruleSet, "name", conflicts);
-        String sequence = chooseField(members, ruleSet, "sequence", conflicts);
-        String organism = chooseField(members, ruleSet, "organism", conflicts);
+        Map<String, String> fieldWinners = new LinkedHashMap<>();
+        String symbol = chooseField(members, ruleSet, "symbol", conflicts, fieldWinners);
+        String name = chooseField(members, ruleSet, "name", conflicts, fieldWinners);
+        String sequence = chooseField(members, ruleSet, "sequence", conflicts, fieldWinners);
+        String organism = chooseField(members, ruleSet, "organism", conflicts, fieldWinners);
 
         String entityKey = type.name() + ":" + anchor.source() + ":" + anchor.localId();
         return new ResolvedEntity(
@@ -322,6 +323,7 @@ public class PriorityIdentifierResolver implements IdentifierResolver {
                 Map.copyOf(identifiersBySource),
                 List.copyOf(conflicts),
                 List.copyOf(contributing),
+                Map.copyOf(fieldWinners),
                 version,
                 ruleSet.id());
     }
@@ -329,7 +331,8 @@ public class PriorityIdentifierResolver implements IdentifierResolver {
     private String chooseField(List<BioRecord> members,
                                RuleSet ruleSet,
                                String field,
-                               List<ResolutionConflict> conflicts) {
+                               List<ResolutionConflict> conflicts,
+                               Map<String, String> fieldWinners) {
         List<String> priority = ruleSet.priorityFor(field);
         // rank each contributing source by this field's effective order
         String winnerSource = null;
@@ -349,6 +352,10 @@ public class PriorityIdentifierResolver implements IdentifierResolver {
         if (winnerValue == null) {
             return null;
         }
+        // Record the winning source even when no conflict exists (all sources agree on
+        // the value, or only one source provides the field): cross-rule-set comparison
+        // must be able to see winner-source changes with identical values.
+        fieldWinners.put(field, winnerSource);
         // retain one differing loser value per source, ordered by the field's source order
         Map<String, String> loserBySource = new LinkedHashMap<>();
         for (BioRecord m : members) {

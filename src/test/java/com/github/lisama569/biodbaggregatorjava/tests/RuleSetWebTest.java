@@ -61,13 +61,21 @@ class RuleSetWebTest {
         mvc.perform(get("/api/snapshots/w1/resolution"))
                 .andExpect(jsonPath("$.entities[0].canonicalName").value("refseq name"));
 
-        // comparison flags the name-winner difference
+        // comparison flags the name value change AND the symbol winner-source change
+        // (symbol value "HBB" is identical on both sides, but the signing source flips
+        // refseq -> ensembl together with the rule set)
         mvc.perform(get("/api/snapshots/w1/resolution/compare")
                         .param("rulesA", "priority-rules-v1")
                         .param("rulesB", "priority-rules-ensembl-v1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.equivalent").value(false))
-                .andExpect(jsonPath("$.fieldDifferences[0].field").value("name"));
+                .andExpect(jsonPath("$.fieldDifferences[?(@.field=='name')].valueChanged")
+                        .value(org.hamcrest.Matchers.contains(true)))
+                .andExpect(jsonPath(
+                        "$.fieldDifferences[?(@.field=='symbol')].winnerSourceChanged")
+                        .value(org.hamcrest.Matchers.contains(true)))
+                .andExpect(jsonPath("$.fieldDifferences[?(@.field=='symbol')].valueChanged")
+                        .value(org.hamcrest.Matchers.contains(false)));
 
         // scoped entity query
         mvc.perform(get("/api/entities/NM1").param("rules", "priority-rules-ensembl-v1"))
